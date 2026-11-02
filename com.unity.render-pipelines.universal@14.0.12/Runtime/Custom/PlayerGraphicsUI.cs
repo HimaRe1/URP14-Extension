@@ -269,8 +269,6 @@ public class PlayerGraphicsUI : MonoBehaviour
         if (GUILayout.Button("打印当前配置", _buttonStyle, GUILayout.Height(_rowH)))
         {
             Debug.Log(_logic.Dump(_setting));
-            // *URP14Port-B07FIX-DIAG：追打平台事实（sRGB backbuffer / 质量 / URP 资产），移动端取证用
-            PlatformDiagnostics.DumpNow();
         }
         if (GUILayout.Button("恢复默认", _buttonStyle, GUILayout.Height(_rowH)))
         {

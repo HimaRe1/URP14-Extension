@@ -151,18 +151,10 @@ namespace UnityEngine.Rendering.Universal.Internal
 
             var cmd = renderingData.commandBuffer;
 
-            // *URP14Port-B07FIX-rsWhite：对齐 URP12 FinalBlitPass.cs:52-55 —— m_Source 是【入队时】
-            // 捕获的 back；UI 相机 Gamma2Line 在执行期做了 back→front 解码并 Swap ⇒ 入队时捕获的那块
-            // 变成了 front（仍是 gamma），真正要读的是 swap 后的 back（Linear）。
-            // ★URP12 的修正是换回 cameraColorTarget——它每次 Configure 都会刷新；而 URP14 的
-            //   cameraColorTargetHandle 只在 ConfigureCameraColorTarget 时刷新，SwapColorBuffer 在
-            //   存在深度附件时走 ConfigureCameraTarget(color, depth) 重载（不刷新 Handle）
-            //   ⇒ Handle 停留在 swap 前的 gamma 块 ⇒ 原修正形同虚设：
-            //   FinalBlit 读到未解码 gamma（isLine=true 不解码、Auto 不编码）⇒ 硬件再编一次
-            //   = 双重编码 = 全屏泛白（gamma 开 + UI PP 关时必现）。
-            // ⇒ 直接从缓冲系统取 swap 后的 back/front（Peek 无副作用，避免 GetFrontBuffer 内部
-            //   ReAllocate 以 m_Desc 重建 A/B 的风险）。
-            // m_ColorBufferSystem 在 UniversalRenderer 上（cameraData.renderer 是基类）⇒ 需转型。
+            // m_Source 是【入队时】捕获的 back；UI 相机 Gamma2Line 在执行期做 back→front 解码并
+            // Swap ⇒ 该块此时已是 front（gamma），真正要读的是 swap 后的 back（Linear）。
+            // 注意不能用 cameraColorTargetHandle：SwapColorBuffer 走 ConfigureCameraTarget(color, depth)
+            // 重载时不刷新该 Handle；且 GetFrontBuffer(cmd) 内部会按 m_Desc 重建 A/B，故用 Peek。
             var urpRenderer = renderingData.cameraData.renderer as UniversalRenderer;
             if (urpRenderer != null && m_Source == urpRenderer.m_ColorBufferSystem.PeekFrontBuffer())
             {
@@ -191,11 +183,6 @@ namespace UnityEngine.Rendering.Universal.Internal
                     m_PassData.requireSrgbConversion || ColorSpacePolicy.PlatformRequiresManualEncode());
                 CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.SRGBToLinearConversion, !m_IsLine);
                 CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.LinearToSRGBConversion, encodeFinal);
-                // *URP14Port-B07FIX-DIAG（rs≠1 泛白专查）：出画瞬间的实参与 source 尺寸。
-                PlatformDiagnostics.LogFinalBlit(cameraData.isUICamera,
-                    m_Source != null && m_Source.rt != null ? m_Source.rt.width : -1,
-                    m_Source != null && m_Source.rt != null ? m_Source.rt.height : -1,
-                    m_IsLine, m_BufferIsLinear, encodeFinal, ColorSpacePolicy.Mode.ToString());
 
                 if (outputsToHDR)
                 {
@@ -273,7 +260,6 @@ namespace UnityEngine.Rendering.Universal.Internal
         {
             passData.renderingData = renderingData;
             passData.requireSrgbConversion = renderingData.cameraData.requireSrgbConversion;
-            PlatformDiagnostics.LogSrgbOnce(passData.requireSrgbConversion); // *URP14Port-B07FIX-DIAG
 
             passData.blitMaterialData = m_BlitMaterialData[(int)blitType];
         }

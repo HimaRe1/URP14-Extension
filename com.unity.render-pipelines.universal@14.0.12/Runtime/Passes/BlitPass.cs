@@ -90,8 +90,6 @@ namespace UnityEngine.Rendering.Universal.Internal
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
-            // *URP14Port-B07FIX-DIAG：D1a 链在真机上是否执行的一次性证明
-            PlatformDiagnostics.LogD1aOnce(m_ColorTransform.ToString(), renderingData.cameraData.renderScale);
             if (m_BlitMaterial == null)
             {
                 Debug.LogErrorFormat("Missing {0}. {1} render pass will not execute. Check for missing reference in the renderer resources.", m_BlitMaterial, GetType().Name);
@@ -124,11 +122,6 @@ namespace UnityEngine.Rendering.Universal.Internal
                 // 2) 放大 blit：back(渲染分辨率) -> front(UI 输出)。
                 RTHandle source = colorBuffer.PeekBackBuffer();
                 RTHandle dest = colorBuffer.PeekFrontBuffer();
-                // *URP14Port-B07FIX-DIAG（rs≠1 泛白专查）：back→front 跨尺寸即可定罪。
-                PlatformDiagnostics.LogD1aSizes(m_ColorTransform.ToString(),
-                    source.rt != null ? source.rt.width : -1, source.rt != null ? source.rt.height : -1,
-                    dest.rt != null ? dest.rt.width : -1, dest.rt != null ? dest.rt.height : -1,
-                    RenderTargetBufferSystem.Desc.width, RenderTargetBufferSystem.Desc.height);
                 // *URP14Port-Phase3-B07FIX（上采样滤波）：按 upscalingFilter 选采样
                 //（NN=PointClamp、Linear/Bilinear=LinearClamp；Auto 已由 URP.cs:1269 解析为实际滤波）。
                 // gamma 链开（Line2Gamma）时转换关键字只在两个 DebugDraw pass 有效：
@@ -204,11 +197,6 @@ namespace UnityEngine.Rendering.Universal.Internal
 
                 RTHandle source = colorBuffer.PeekBackBuffer();
                 RTHandle dest = colorBuffer.PeekFrontBuffer();
-                // *URP14Port-B07FIX-DIAG（rs≠1 泛白专查）：解码是否发生在同尺寸缓冲上。
-                PlatformDiagnostics.LogD1aSizes("Gamma2Line",
-                    source.rt != null ? source.rt.width : -1, source.rt != null ? source.rt.height : -1,
-                    dest.rt != null ? dest.rt.width : -1, dest.rt != null ? dest.rt.height : -1,
-                    RenderTargetBufferSystem.Desc.width, RenderTargetBufferSystem.Desc.height);
                 CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.SRGBToLinearConversion, true);
                 Blitter.BlitCameraTexture(cmd, source, dest,
                     RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, m_BlitMaterial, m_ConvertPass);

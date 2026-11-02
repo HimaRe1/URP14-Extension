@@ -377,14 +377,6 @@ namespace UnityEngine.Rendering.Universal
             bool needsEncode = ColorSpacePolicy.ShouldEncodeFinal(bufferIsLinear,
                 cameraData.requireSrgbConversion || ColorSpacePolicy.PlatformRequiresManualEncode())
                 && m_ResolveToScreen;
-            // 诊断开关（ColorProbe）仍可强制覆盖，便于设备上 A/B
-            if (ColorProbe.Enabled)
-            {
-                if (ColorProbe.Mode == 1)
-                    needsEncode = false;
-                else if (ColorProbe.Mode == 2)
-                    needsEncode = m_ResolveToScreen;
-            }
             return needsEncode && m_EnableColorEncodingIfNeeded;
         }
 

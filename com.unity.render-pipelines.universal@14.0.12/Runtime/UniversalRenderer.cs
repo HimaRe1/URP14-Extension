@@ -170,7 +170,6 @@ namespace UnityEngine.Rendering.Universal
         internal ColorGradingLutPass colorGradingLutPass { get => m_PostProcessPasses.colorGradingLutPass; }
         internal PostProcessPass postProcessPass { get => m_PostProcessPasses.postProcessPass; }
         internal PostProcessPass finalPostProcessPass { get => m_PostProcessPasses.finalPostProcessPass; }
-        ColorProbePass m_ColorProbePass; // *URP14Port-B07FIX-DIAG：颜色数值探针
         internal RTHandle colorGradingLut { get => m_PostProcessPasses.colorGradingLut; }
         internal DeferredLights deferredLights { get => m_DeferredLights; }
 
@@ -1334,20 +1333,6 @@ namespace UnityEngine.Rendering.Universal
                     doSRGBEncoding = resolvePostProcessingToCameraTarget && needsColorEncoding;
                     postProcessPass.Setup(cameraTargetDescriptor, m_ActiveCameraColorAttachment, resolvePostProcessingToCameraTarget, m_ActiveCameraDepthAttachment, colorGradingLut, m_MotionVectorColor, applyFinalPostProcessing, doSRGBEncoding);
                     EnqueuePass(postProcessPass);
-
-                    // *URP14Port-B07FIX-DIAG：颜色探针 —— 回读 UI 相机颜色缓冲（= Uber 输入）
-                    if (ColorProbe.Enabled && cameraData.isUICamera)
-                    {
-                        if (m_ColorProbePass == null)
-                            m_ColorProbePass = new ColorProbePass();
-                        // 最终输出在相机的 targetTexture 里（探针模式下）；
-                        // 没有 targetTexture 时退回颜色附件。
-                        if (cameraData.camera.targetTexture != null)
-                            m_ColorProbePass.SetupTexture(cameraData.camera.targetTexture, "UI-final-RT");
-                        else
-                            m_ColorProbePass.Setup(m_ActiveCameraColorAttachment, "UI-final");
-                        EnqueuePass(m_ColorProbePass);
-                    }
                 }
 
                 var sourceForFinalPass = m_ActiveCameraColorAttachment;
@@ -1391,11 +1376,6 @@ namespace UnityEngine.Rendering.Universal
                 //     且 scalingSetup 仅开 _FXAA（无 _GAMMA_20，PP.cs:1496-1498）⇒
                 //     FXAA 后缓冲仍是 Linear，对颜色链完全透明，无需特判。
                 // 源注释：选错方向就会重复编码（泛白发亮）或重复解码（整体偏暗）。
-                // *URP14Port-B07FIX-DIAG：出画判定全量取证（每相机前 3 帧）
-                PlatformDiagnostics.LogResolveState(cameraData.isUICamera, applyPostProcessing, applyFinalPostProcessing,
-                    resolvePostProcessingToCameraTarget, doSRGBEncoding, cameraTargetResolved,
-                    uiBufferBackToLinear, UnityEngine.Time.frameCount,
-                    cameraTargetDescriptor.graphicsFormat.ToString(), cameraData.isHdrEnabled);
                 if (!cameraTargetResolved)
                 {
                     bool isLineBlit = uiBufferBackToLinear || !IsGammaCorrectEnable(ref cameraData);
