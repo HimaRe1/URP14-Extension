@@ -361,7 +361,31 @@ namespace UnityEngine.Rendering.Universal
 
         bool RequireSRGBConversionBlitToBackBuffer(ref CameraData cameraData)
         {
-            return cameraData.requireSrgbConversion && m_EnableColorEncodingIfNeeded;
+            // *URP14Port-Phase3-B07FIX-AndroidSrgb：最后那次 sRGB 编码的归属。
+            // 桌面（D3D11/Metal）：backbuffer 是 sRGB swapchain，写入时 OM 自动编码 ⇒ 不需要手动编码
+            //   （cameraData.requireSrgbConversion=false 正是这个语义）。
+            // GLES/Vulkan：默认帧缓冲是 RGBA8、写入不编码 ⇒ 必须由 Uber 关键字补最后一次编码，
+            //   否则 Linear 值直出 → 全屏过暗（OnePlus KB2000/Android14 实测）。
+            //   注意 Unity 的 requireSrgbConversion 依赖 Display.main.requiresSrgbBlitToBackbuffer，
+            //   在该设备上误报 false，不能作为判据 ⇒ 这里按图形 API 判定。
+            // m_ResolveToScreen：只有解析到屏幕的那台相机才需要编码；基底相机的 Uber 写进 RT，
+            //   必须保持线性（后续 Line2Gamma/Gamma2Line 依赖），故不能在这里编码。
+            // *URP14Port-Phase3-B07FIX-AndroidSrgb：最终编码统一由 ColorSpacePolicy 判定
+            // （与 FinalBlit 路径同语义）。m_ResolveToScreen：只有解析到屏幕的那台相机才编码，
+            // 基底相机的 Uber 写进 RT，必须保持 Linear（Line2Gamma/Gamma2Line 依赖）。
+            bool bufferIsLinear = true; // gamma 链回程后缓冲为 Linear；未开 gamma 时亦为 Linear
+            bool needsEncode = ColorSpacePolicy.ShouldEncodeFinal(bufferIsLinear,
+                cameraData.requireSrgbConversion || ColorSpacePolicy.PlatformRequiresManualEncode())
+                && m_ResolveToScreen;
+            // 诊断开关（ColorProbe）仍可强制覆盖，便于设备上 A/B
+            if (ColorProbe.Enabled)
+            {
+                if (ColorProbe.Mode == 1)
+                    needsEncode = false;
+                else if (ColorProbe.Mode == 2)
+                    needsEncode = m_ResolveToScreen;
+            }
+            return needsEncode && m_EnableColorEncodingIfNeeded;
         }
 
         bool RequireHDROutput(ref CameraData cameraData)

@@ -11,6 +11,23 @@ namespace UnityEngine.Rendering.Universal
     /// </summary>
     public static class RenderingUtils
     {
+        /// <summary>
+        /// 平台默认帧缓冲写入时是否会做 sRGB 硬件编码。
+        /// D3D11/12（sRGB swapchain）与桌面 Metal：会（OM 自动编码）。
+        /// GLES/Vulkan：默认帧缓冲是 RGBA8，写入不编码 ⇒ 必须由 shader 关键字补最后一次编码，
+        /// 否则 Linear 值直出 → 全屏过暗（OnePlus KB2000 / Android 14 / OpenGLES3 实测）。
+        /// 背景：CameraData.requireSrgbConversion 依赖 Display.main.requiresSrgbBlitToBackbuffer，
+        /// 在部分 Android 设备上该值误报 false（桌面实测也是 false，但桌面有 backbuffer 硬件编码兜底，
+        /// 故桌面不需要手动编码）——因此这里按图形 API 判定，不依赖该 API。
+        /// </summary>
+        internal static bool BackbufferAutoEncodes()
+        {
+            var t = SystemInfo.graphicsDeviceType;
+            return t != GraphicsDeviceType.OpenGLES2
+                && t != GraphicsDeviceType.OpenGLES3
+                && t != GraphicsDeviceType.Vulkan;
+        }
+
         static List<ShaderTagId> m_LegacyShaderPassNames = new List<ShaderTagId>
         {
             new ShaderTagId("Always"),

@@ -21,6 +21,13 @@ namespace UnityEngine.Rendering.Universal.Internal
         // _LINEAR_TO_SRGB_CONVERSION，直接关掉它即可等价，无需新增 shader 关键字。
         bool m_IsLine = true;
 
+        // *URP14Port-Phase3-B07FIX-AndroidSrgb：缓冲在本 pass 之前是否已还原为 Linear
+        // （= gamma 开时 Gamma2Line 回程已跑，UniversalRenderer 传入 uiBufferBackToLinear）。
+        // 安卓 GLES/Vulkan 的 backbuffer 没有硬件 sRGB 编码，且 Display.main.requiresSrgbBlitToBackbuffer
+        // 在部分设备返回 False（OnePlus KB2000 / Android 14 实测），requireSrgbConversion 判据失效
+        // ⇒ 缓冲为 Linear 时必须由本 pass 关键字补上最后一次编码，否则 linear 直出（全屏过暗）。
+        bool m_BufferIsLinear = false;
+
         // Use specialed URP fragment shader pass for debug draw support and color space conversion/encoding support.
         // See CoreBlit.shader and BlitHDROverlay.shader
         static class BlitPassNames
@@ -94,10 +101,11 @@ namespace UnityEngine.Rendering.Universal.Internal
         /// </summary>
         /// <param name="baseDescriptor"></param>
         /// <param name="colorHandle"></param>
-        public void Setup(RenderTextureDescriptor baseDescriptor, RTHandle colorHandle, bool isLine = true)
+        public void Setup(RenderTextureDescriptor baseDescriptor, RTHandle colorHandle, bool isLine = true, bool bufferIsLinear = false)
         {
             m_Source = colorHandle;
             m_IsLine = isLine; // *URP14Port-Phase3-B01
+            m_BufferIsLinear = bufferIsLinear; // *URP14Port-Phase3-B07FIX-AndroidSrgb
         }
 
         static void SetupHDROutput(ColorGamut hdrDisplayColorGamut, Material material, HDROutputUtils.Operation hdrOperation, Vector4 hdrOutputParameters)
@@ -143,9 +151,22 @@ namespace UnityEngine.Rendering.Universal.Internal
 
             var cmd = renderingData.commandBuffer;
 
-            if (m_Source == cameraData.renderer.GetCameraColorFrontBuffer(cmd))
+            // *URP14Port-B07FIX-rsWhite：对齐 URP12 FinalBlitPass.cs:52-55 —— m_Source 是【入队时】
+            // 捕获的 back；UI 相机 Gamma2Line 在执行期做了 back→front 解码并 Swap ⇒ 入队时捕获的那块
+            // 变成了 front（仍是 gamma），真正要读的是 swap 后的 back（Linear）。
+            // ★URP12 的修正是换回 cameraColorTarget——它每次 Configure 都会刷新；而 URP14 的
+            //   cameraColorTargetHandle 只在 ConfigureCameraColorTarget 时刷新，SwapColorBuffer 在
+            //   存在深度附件时走 ConfigureCameraTarget(color, depth) 重载（不刷新 Handle）
+            //   ⇒ Handle 停留在 swap 前的 gamma 块 ⇒ 原修正形同虚设：
+            //   FinalBlit 读到未解码 gamma（isLine=true 不解码、Auto 不编码）⇒ 硬件再编一次
+            //   = 双重编码 = 全屏泛白（gamma 开 + UI PP 关时必现）。
+            // ⇒ 直接从缓冲系统取 swap 后的 back/front（Peek 无副作用，避免 GetFrontBuffer 内部
+            //   ReAllocate 以 m_Desc 重建 A/B 的风险）。
+            // m_ColorBufferSystem 在 UniversalRenderer 上（cameraData.renderer 是基类）⇒ 需转型。
+            var urpRenderer = renderingData.cameraData.renderer as UniversalRenderer;
+            if (urpRenderer != null && m_Source == urpRenderer.m_ColorBufferSystem.PeekFrontBuffer())
             {
-                m_Source = renderingData.cameraData.renderer.cameraColorTargetHandle;
+                m_Source = urpRenderer.m_ColorBufferSystem.PeekBackBuffer();
             }
 
             using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.FinalBlit)))
@@ -158,9 +179,23 @@ namespace UnityEngine.Rendering.Universal.Internal
                 // isLine=false（缓冲仍是 Gamma，如 UI PP 关时 Gamma2Line 未插）⇒ 先解码一次，
                 // 与 backbuffer 写入的编码互逆恒等，原样保留 gamma 结果（源 :69）；
                 // isLine=true（缓冲已是 Linear）⇒ 不解码，按平台需要（requireSrgbConversion）编码。
+                // 源注释：选错方向就会重复编码（泛白发亮）或重复解码（整体偏暗）。
+                // *URP14Port-Phase3-B07FIX-AndroidSrgb：编码补齐第二判据——requireSrgbConversion
+                // 依赖 Display.main.requiresSrgbBlitToBackbuffer，在部分安卓设备返回 False 而
+                // backbuffer 实际不编码 ⇒ 缓冲为 Linear 时按图形 API 补编码（GLES/Vulkan）。
+                // 桌面（D3D11/Metal）两判据均不变，行为与已验证结论完全一致。
+                // *URP14Port-Phase3-B07FIX-AndroidSrgb：最终编码统一由 ColorSpacePolicy 判定，
+                // 与 Uber（UI PP 开路径）使用同一套语义，避免两条出画路径各算各的。
+                // m_BufferIsLinear：出画瞬间缓冲是否为 Linear（gamma 链回程后为 true）。
+                bool encodeFinal = ColorSpacePolicy.ShouldEncodeFinal(m_BufferIsLinear,
+                    m_PassData.requireSrgbConversion || ColorSpacePolicy.PlatformRequiresManualEncode());
                 CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.SRGBToLinearConversion, !m_IsLine);
-                CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.LinearToSRGBConversion,
-                    m_PassData.requireSrgbConversion);
+                CoreUtils.SetKeyword(cmd, ShaderKeywordStrings.LinearToSRGBConversion, encodeFinal);
+                // *URP14Port-B07FIX-DIAG（rs≠1 泛白专查）：出画瞬间的实参与 source 尺寸。
+                PlatformDiagnostics.LogFinalBlit(cameraData.isUICamera,
+                    m_Source != null && m_Source.rt != null ? m_Source.rt.width : -1,
+                    m_Source != null && m_Source.rt != null ? m_Source.rt.height : -1,
+                    m_IsLine, m_BufferIsLinear, encodeFinal, ColorSpacePolicy.Mode.ToString());
 
                 if (outputsToHDR)
                 {
@@ -238,6 +273,7 @@ namespace UnityEngine.Rendering.Universal.Internal
         {
             passData.renderingData = renderingData;
             passData.requireSrgbConversion = renderingData.cameraData.requireSrgbConversion;
+            PlatformDiagnostics.LogSrgbOnce(passData.requireSrgbConversion); // *URP14Port-B07FIX-DIAG
 
             passData.blitMaterialData = m_BlitMaterialData[(int)blitType];
         }

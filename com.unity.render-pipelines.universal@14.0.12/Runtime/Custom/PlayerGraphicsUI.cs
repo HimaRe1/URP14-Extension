@@ -267,11 +267,32 @@ public class PlayerGraphicsUI : MonoBehaviour
         Title("[ 操作 ]");
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("打印当前配置", _buttonStyle, GUILayout.Height(_rowH)))
+        {
             Debug.Log(_logic.Dump(_setting));
+            // *URP14Port-B07FIX-DIAG：追打平台事实（sRGB backbuffer / 质量 / URP 资产），移动端取证用
+            PlatformDiagnostics.DumpNow();
+        }
         if (GUILayout.Button("恢复默认", _buttonStyle, GUILayout.Height(_rowH)))
         {
             _setting.ResetToDefault();
             Changed();
+        }
+        GUILayout.EndHorizontal();
+
+        // *URP14Port-Phase3-B07FIX-AndroidSrgb：最终 sRGB 编码策略（跨平台显式化）。
+        // Auto = 桌面行为（靠 backbuffer 硬件编码）；Manual = 手动补一次编码（backbuffer 不编码的平台）；
+        // Off = 强制不编码（诊断）。切换即时生效并持久化。
+        GUILayout.BeginHorizontal();
+        string policyName = ColorSpacePolicy.Mode == ColorSpacePolicy.FinalEncodeMode.Auto ? "Auto(不手动编码)"
+            : ColorSpacePolicy.Mode == ColorSpacePolicy.FinalEncodeMode.Manual ? "Manual(手动编码一次)" : "Off(不编码)";
+        if (GUILayout.Button("最终sRGB编码: " + policyName, _buttonStyle, GUILayout.Height(_rowH)))
+        {
+            ColorSpacePolicy.Mode = ColorSpacePolicy.Mode == ColorSpacePolicy.FinalEncodeMode.Auto
+                ? ColorSpacePolicy.FinalEncodeMode.Manual
+                : ColorSpacePolicy.Mode == ColorSpacePolicy.FinalEncodeMode.Manual
+                    ? ColorSpacePolicy.FinalEncodeMode.Off
+                    : ColorSpacePolicy.FinalEncodeMode.Auto;
+            Debug.Log("[PlayerGraphicsUI] 最终sRGB编码策略 = " + ColorSpacePolicy.Mode);
         }
         GUILayout.EndHorizontal();
 

@@ -170,6 +170,7 @@ namespace UnityEngine.Rendering.Universal
         internal ColorGradingLutPass colorGradingLutPass { get => m_PostProcessPasses.colorGradingLutPass; }
         internal PostProcessPass postProcessPass { get => m_PostProcessPasses.postProcessPass; }
         internal PostProcessPass finalPostProcessPass { get => m_PostProcessPasses.finalPostProcessPass; }
+        ColorProbePass m_ColorProbePass; // *URP14Port-B07FIX-DIAG：颜色数值探针
         internal RTHandle colorGradingLut { get => m_PostProcessPasses.colorGradingLut; }
         internal DeferredLights deferredLights { get => m_DeferredLights; }
 
@@ -1312,8 +1313,12 @@ namespace UnityEngine.Rendering.Universal
                 // 只要 final pass（FXAA）会跑，就必须先把 buffer 从 Gamma 还原成 Linear：
                 // 「Gamma 空间直出 final pass」会全屏发白，而「Gamma2Line → final 编码一次」正确。
                 // 注意 Gamma2Line 模式结尾无条件 SwapColorBuffer，这次插桩同时补齐了 swap 次数。
+                // *URP14Port-Phase3-B07FIX-AndroidSrgb：Gamma2Line 不再依赖 applyPost/applyFinalPost ——
+                // gamma 链开启时【总是】插一次回程解码，保证出画瞬间缓冲状态唯一（Linear），
+                // 否则「UI PP 开」与「UI PP 关」两条出画路径的缓冲状态不一致（一条 Linear、一条 Gamma），
+                // 最终编码/解码的配对就会错位（安卓上表现为 UI PP 关时极暗）。
                 if (sUISplitEnable && cameraData.isUICamera && sIsGammaCorrectEnable
-                    && sEnableUICameraUseSwapBuffer && (applyPostProcessing || applyFinalPostProcessing))
+                    && sEnableUICameraUseSwapBuffer)
                 {
                     m_BlitPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
                     m_BlitPass.Setup(cameraTargetDescriptor, BlitPass.BlitColorTransform.Gamma2Line);
@@ -1322,12 +1327,27 @@ namespace UnityEngine.Rendering.Universal
                 }
 
                 // Post-processing will resolve to final target. No need for final blit pass.
+                bool doSRGBEncoding = false; // *URP14Port-B07FIX-DIAG：提升作用域供探针读取
                 if (applyPostProcessing)
                 {
                     // if resolving to screen we need to be able to perform sRGBConversion in post-processing if necessary
-                    bool doSRGBEncoding = resolvePostProcessingToCameraTarget && needsColorEncoding;
+                    doSRGBEncoding = resolvePostProcessingToCameraTarget && needsColorEncoding;
                     postProcessPass.Setup(cameraTargetDescriptor, m_ActiveCameraColorAttachment, resolvePostProcessingToCameraTarget, m_ActiveCameraDepthAttachment, colorGradingLut, m_MotionVectorColor, applyFinalPostProcessing, doSRGBEncoding);
                     EnqueuePass(postProcessPass);
+
+                    // *URP14Port-B07FIX-DIAG：颜色探针 —— 回读 UI 相机颜色缓冲（= Uber 输入）
+                    if (ColorProbe.Enabled && cameraData.isUICamera)
+                    {
+                        if (m_ColorProbePass == null)
+                            m_ColorProbePass = new ColorProbePass();
+                        // 最终输出在相机的 targetTexture 里（探针模式下）；
+                        // 没有 targetTexture 时退回颜色附件。
+                        if (cameraData.camera.targetTexture != null)
+                            m_ColorProbePass.SetupTexture(cameraData.camera.targetTexture, "UI-final-RT");
+                        else
+                            m_ColorProbePass.Setup(m_ActiveCameraColorAttachment, "UI-final");
+                        EnqueuePass(m_ColorProbePass);
+                    }
                 }
 
                 var sourceForFinalPass = m_ActiveCameraColorAttachment;
@@ -1371,10 +1391,21 @@ namespace UnityEngine.Rendering.Universal
                 //     且 scalingSetup 仅开 _FXAA（无 _GAMMA_20，PP.cs:1496-1498）⇒
                 //     FXAA 后缓冲仍是 Linear，对颜色链完全透明，无需特判。
                 // 源注释：选错方向就会重复编码（泛白发亮）或重复解码（整体偏暗）。
+                // *URP14Port-B07FIX-DIAG：出画判定全量取证（每相机前 3 帧）
+                PlatformDiagnostics.LogResolveState(cameraData.isUICamera, applyPostProcessing, applyFinalPostProcessing,
+                    resolvePostProcessingToCameraTarget, doSRGBEncoding, cameraTargetResolved,
+                    uiBufferBackToLinear, UnityEngine.Time.frameCount,
+                    cameraTargetDescriptor.graphicsFormat.ToString(), cameraData.isHdrEnabled);
                 if (!cameraTargetResolved)
                 {
                     bool isLineBlit = uiBufferBackToLinear || !IsGammaCorrectEnable(ref cameraData);
-                    m_FinalBlitPass.Setup(cameraTargetDescriptor, sourceForFinalPass, isLineBlit);
+                    // *URP14Port-Phase3-B07FIX-AndroidSrgb：第 4 参告诉 FinalBlit「缓冲此刻是 Linear」，
+                    // 供 GLES/Vulkan backbuffer 无硬件编码时的补编码判据（桌面不受影响）。
+                    // *URP14Port-Phase3-B07FIX-AndroidSrgb：出画瞬间缓冲恒为 Linear
+                    //   · gamma 开 ⇒ Gamma2Line 回程已把合成图解码回 Linear；
+                    //   · gamma 关 ⇒ 场景本身是 Linear、UI 未预编码，也是 Linear。
+                    // 因此「是否需要手动做最终编码」只看平台策略，不再看 uiBufferBackToLinear。
+                    m_FinalBlitPass.Setup(cameraTargetDescriptor, sourceForFinalPass, isLineBlit, true);
                     EnqueuePass(m_FinalBlitPass);
                 }
 

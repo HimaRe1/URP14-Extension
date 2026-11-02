@@ -1,6 +1,10 @@
 // Unity built-in shader source. Copyright (c) 2016 Unity Technologies. MIT license (see license.txt)
 
 Shader "UI/Default"
+// *URP14Port-B07FIX-UIGamma：保持与 URP12 源工程同名（"UI/Default"），覆盖 Unity 内置 shader。
+// 内置默认 UI 材质按名字解析到本 shader ⇒ UI_Pixel.hlsl 的 _IsInUICamera 预编码分支对所有
+// UGUI 元素生效（URP12 在安卓上正是靠该机制）。★不要改名：改名后 Unity 判定不再覆盖内置，
+// AlwaysIncludedShaders 里的内置条目被删且不自动恢复 ⇒ 包里没有内置 UI/Default ⇒ 真机 UI 粉红。
 {
     Properties
     {
